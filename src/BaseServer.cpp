@@ -34,24 +34,31 @@ BaseServer::BaseServer(const unsigned short port) {
 
 void* BaseServer::thread_function() {
     printf("BaseServer::thread_function\n");
-    socklen_t len = 0;
-    int pid_t childpid = -1;
     int connfd = 0;
 	for(;;) {
-        len = sizeof(cliaddr);
         printf("Base_server::thread_function::accepting\n");
-        connfd = accept(listen_fd, (sockaddr*)&cliaddr, &len);
+        connfd = Accept();
         if(connfd == -1)
             throw AcceptException();
-        if((childpid = fork()) == 0) {
-            close(listen_fd);
-            
-            // Connection handler.
-            ConnectionHandler(connfd);
-            close(connfd);
-            exit(1);
-        }
+        
+        NewClientHandler(connfd);
     }
+}
+
+void BaseServer::NewClientHandler(int connfd) {
+    printf("BaseServer::NewClientHandler\n");
+    pid_t childpid = -1;
+    if ((childpid = fork()) == 0) {
+        CloseListenDescriptor();
+        ConnectionHandler(connfd);
+        close(connfd);
+        exit(1);
+    }
+}
+
+int BaseServer::Accept() {
+    socklen_t len = 0;
+    return accept(listen_fd, (sockaddr*)&cliaddr, &len);
 }
 
 BaseServer::~BaseServer() {
@@ -90,7 +97,7 @@ void BaseServer::Send(int socket_fd, std::string str) {
 }
 
 
-
-
-
+void BaseServer::CloseListenDescriptor() {
+    close(listen_fd);
+}
 
