@@ -10,10 +10,10 @@
 #include <string.h>
 
 BaseServer::BaseServer(const unsigned short port) {
+    printf("BaseServer::BaseServer: port = %d\n", port);
     if((listen_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
         throw SocketException();
 
-    printf("BaseServer::BaseServer, port = %d\n", port);
     memset(&servaddr, 0, sizeof(struct sockaddr_in));
     servaddr.sin_family = AF_INET;
     servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -22,44 +22,95 @@ BaseServer::BaseServer(const unsigned short port) {
     int reuseaddr = 1;
     setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof(reuseaddr));
 
-	printf("BaseServer::run()\n");
     if(bind(listen_fd, (sockaddr*)&servaddr, sizeof(servaddr)) != 0)
         throw BindException();
 
     if(listen(listen_fd, 1024) != 0)
         throw ListenException();
-
-
 }
 
 void* BaseServer::thread_function() {
-    printf("BaseServer::thread_function\n");
-    int connfd = 0;
-	for(;;) {
-        printf("Base_server::thread_function::accepting\n");
-        connfd = Accept();
-        if(connfd == -1)
-            throw AcceptException();
-        
-        NewClientHandler(connfd);
+    fd_set read_fds;
+    fd_set write_fds;
+    fd_set except_fds;
+
+    for(;;) {
+        FD_ZERO(&read_fds);
+        FD_ZERO(&write_fds);
+        FD_ZERO(&except_fds);
+    
+        FD_SET(listen_fd, &read_fds);
+        FD_SET(listen_fd, &except_fds);
+
+        int i = 0;
+
+        int high_socket = listen_fd;
+        for(i = 0; i < peers.size(); i++) {
+            FD_SET(peers[i]->socket, &read_fds);
+//          FD_SET(peers[i]->socket, &write_fds);
+            if(peers[i]->socket > high_socket)
+                high_socket = peers[i]->socket;
+        }
+
+
+        int res = select(high_socket + 1, &read_fds, &write_fds, &except_fds, NULL);
+
+        if(res < 0) {
+            return NULL;
+        } else if (res == 0 ) {
+            return NULL;
+        }
+    
+        if (FD_ISSET(listen_fd, &read_fds)) {
+            CreateConnection();
+        }
+
+        for(i = (int)peers.size()-1; i >= 0; i--) {
+            if(FD_ISSET(peers[i]->socket, &read_fds)) {
+                if(ReceiveData(peers[i]) < 0) {
+                    CloseConnection(&peers[i]);
+                    peers.erase(peers.begin()+i);
+                    continue;
+                }
+           }
+           if(FD_ISSET(peers[i]->socket, &write_fds)) {
+                if(SendData(peers[i]) < 0) {
+                    CloseConnection(&peers[i]);
+                    peers.erase(peers.begin()+i);
+                    continue;
+                }
+            }
+        }
     }
+
 }
 
-void BaseServer::NewClientHandler(int connfd) {
-    printf("BaseServer::NewClientHandler\n");
-    pid_t childpid = -1;
-    if ((childpid = fork()) == 0) {
-        CloseListenDescriptor();
-        ConnectionHandler(connfd);
-        close(connfd);
-        exit(1);
+
+int BaseServer::ReceiveData(Peer *peer) {
+    printf("BaseServer::ReceiveData\n");
+    int received_count = recv(peer->socket, peer->data, 1024, 0);
+    if(received_count <= 0) {
+        return -1;
+    } else {
+        peer->received_count = received_count;
     }
+
+    ReceiveCallback(peer);
+
+    return 0;
 }
 
-int BaseServer::Accept() {
-    socklen_t len = 0;
-    return accept(listen_fd, (sockaddr*)&cliaddr, &len);
+int BaseServer::SendData(Peer *peer) {
+    printf("BaseServer::SendData\n");
+    int send_count = send(peer->socket, peer->data, peer->send_len, 0);
+    printf("BaseServer::SendData: send_count = %d\n", send_count);
+    peer->clearData();
+    if(send_count <= 0) {
+        return -1;
+    } 
+    return send_count;
 }
+
 
 BaseServer::~BaseServer() {
     printf("BaseServer::~BaseServer\n");
@@ -67,37 +118,56 @@ BaseServer::~BaseServer() {
     close(listen_fd);
 }
 
-int BaseServer::Receive(int socket_fd, unsigned char * buffer, const int size) {
-    printf("BaseServer::Receive\n");
-    return read(socket_fd, buffer, size);
+void BaseServer::CreateConnection() {
+    printf("BaseServer::CreateConnection\n");
+    struct sockaddr_in cliaddr;
+    memset(&cliaddr, 0, sizeof(cliaddr));
+    int connfd = 0;
+    socklen_t len = sizeof(cliaddr);
+    connfd = accept(listen_fd, (struct sockaddr*)&cliaddr, &len);
+    if(connfd < 0)
+        return;
+
+    Peer * peer = new Peer(connfd, cliaddr);
+    peers.push_back(peer);
+
+    CreateConnectionCallback(peer);
 }
 
-int BaseServer::Receive(int socket_fd, std::string &str) {
-    printf("BaseServer::Receive\n");
-    const int size = 512;
-    unsigned char buffer[size];
-    int res = read(socket_fd, buffer, size);
-    std::string tmp_str(buffer, buffer+size);
-    str = tmp_str;
-    return res;
+char * Peer::getData() {
+    return this->data;
 }
 
-void BaseServer::Send(int socket_fd, unsigned char * buffer, const int size) {
-    printf("BaseServer::Send\n");
-    write(socket_fd, buffer, size);
+void Peer::setData(const char *data, int len) {
+    memcpy(this->data, data, len);
+    this->send_len = len;
 }
 
-void BaseServer::Send(int socket_fd, std::string str) {
-    printf("BaseServer::Send\n");
-    const int size = str.length()+1;
-    unsigned char buffer[size];
-    std::copy(str.begin(), str.end(), buffer);
-    buffer[size-1] = 0;
-    write(socket_fd, buffer, size);
+void Peer::clearData() {
+    memset(data, 0, sizeof(data));
+    send_len = 0;
+}
+
+std::string Peer::getAddress() {
+    char peer_ipv4_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &this->address.sin_addr, peer_ipv4_str, INET_ADDRSTRLEN);
+    char buffer[64] = "";
+    sprintf(buffer, "%s:%d", peer_ipv4_str, this->address.sin_port );
+    return std::string(buffer);
 }
 
 
-void BaseServer::CloseListenDescriptor() {
-    close(listen_fd);
+Peer::Peer(int connfd, struct sockaddr_in addr) {
+    this->socket = connfd;
+    this->address = addr;
+    this->current_receiving_byte = 0;
 }
 
+
+void BaseServer::CloseConnection(Peer **peer) {
+    printf("BaseServer::CloseConnection\n");
+    if(*peer == NULL) return;
+    close((*peer)->socket);
+    delete *peer;
+    *peer = NULL;
+}

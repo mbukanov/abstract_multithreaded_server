@@ -4,13 +4,35 @@
 #include "myThread.hpp"
 
 #include <string>
+#include <vector>
+
+class BaseServer;
+
+class Peer {
+    friend class BaseServer;
+private:
+    int socket;
+    struct sockaddr_in address;
+    char data[1024];
+    int received_count;
+    int current_receiving_byte;
+
+    char send_buffer[1024];
+    int send_len;
+public:
+    Peer(int connfd, struct sockaddr_in addr);
+    std::string getAddress();
+    char * getData();
+    void setData(const char *data, int len);
+    void clearData();
+};
 
 class BaseServer: public myThread {
 private:
     unsigned short port;
     int listen_fd;
     struct sockaddr_in servaddr;
-    struct sockaddr_in cliaddr;
+    std::vector<Peer*> peers;
 
 public:
     class BaseServerException{};
@@ -19,19 +41,22 @@ public:
     class ListenException : public BaseServerException {};
     class AcceptException : public BaseServerException {};
 
+    static int getPeersCount();
+
     void *thread_function();
     BaseServer(const unsigned short port);
     ~BaseServer();
-    int Receive(int socket_fd, unsigned char * buffer, const int size);
-    int Receive(int socket_fd, std::string& buffer);
-    void Send(int socket_fd, unsigned char * buffer, const int size);
-    void Send(int socket_fd, std::string buffer);
 
-    void CloseListenDescriptor();
-    int Accept();
+    virtual void ReceiveCallback(Peer *peer) {}
+    virtual void CreateConnectionCallback(Peer *peer) {}
 
-    virtual void NewClientHandler(int connfd);
-    virtual void ConnectionHandler(int conn_fd) {};
+    int ReceiveData(Peer *peer);
+    int SendData(Peer *peer);
+
+    void CreateConnection();
+    void CloseConnection(Peer ** peer);
+
+
 
 };
 
