@@ -131,6 +131,7 @@ void BaseServer::CreateConnection() {
     Peer * peer = new Peer(connfd, cliaddr);
     peers.push_back(peer);
 
+    printf("BaseServer::CreateConnection: peers count: %d\n", (int)peers.size());
     CreateConnectionCallback(peer);
 }
 
